@@ -1,0 +1,461 @@
+---
+title: "Enfoque Estadístico del Aprendizaje, primer Trabajo Práctico "
+author: 'Enrique Pires Barracosa' 
+date: '2 de Octubre de 2020'
+output: html_notebook
+---
+
+En este trabajo  vamos a analizar un conjunto de datos con información asociada a propiedades en venta. Nuestro objetivo será explicar el precio de venta de dichas propiedades y para tal fin realizaremos un modelo lineal.
+
+
+
+## Preparación de los Datos
+
+Comenzamos cargando las librerías Tidyverse y Lubridate
+
+
+```{r}
+
+#Instalación de Tidyverse y Lubridate
+#install.packages('tidyverse')
+#install.packages('lubridate')
+
+library(tidyverse)
+library(lubridate)
+```
+
+
+
+Cargamos el dataset y le damos un vistazo
+
+```{r}
+datos_originales <- read.csv('ar_properties.csv')
+glimpse(datos_originales)
+```
+Hagamos una mejor visualización usando la librería knitr
+```{r}
+#install.packages('knitr')
+#install.packages('kableExtra')
+library(knitr)
+library(kableExtra)
+
+datos_originales %>%  
+  head() %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = c("striped"))
+```
+Necesitamos restringirnos a las propiedades de Capital Federal del tipo casa, departamento o PH que estén a la venta con precio en dólares.
+
+Las variables l1 y l2 nos dicen el Pais y la región respectivamente. La variable property_type  nos muestra el tipo de propiedad, y operation_type el tipo de operación. Observamos que el tipo de moneda posiblemente se refleje en la variable currency. Como en las primeras visualizaciones que hicimos encontramos en su mayoría faltantes en la variable currency, observamos sus valores únicos.
+
+
+
+  
+```{r}
+unique(datos_originales %>% select(currency))
+```
+Filtramos por los valores requeridos de esas variables. Usamos droplevels() para remover factores que queden sin uso en variables aleatorias, como por ejemplo los tipos de propiedad a los que no nos estamos restringiendo (https://www.rdocumentation.org/packages/base/versions/3.6.2/topics/droplevels).
+
+```{r}
+datos_filtrados <- droplevels(datos_originales %>% 
+  filter(l1 == "Argentina" , l2 == "Capital Federal", currency == 'USD', operation_type == 'Venta', (property_type == 'Departamento'|property_type == 'PH'|property_type == 'Casa')))
+
+```
+  
+Ahora usamos select para quedarnos con las variables con las que vamos a trabajar: id, l3, rooms, bedrooms, bathrooms, surface_total, surface_covered, price y property_type.
+
+```{r}
+datos_seleccion <- datos_filtrados %>%
+  select(id, l3, rooms, bedrooms, bathrooms, surface_total, surface_covered, price, property_type)
+```
+
+Verifiquemos que nos quedó
+
+```{r}
+glimpse(datos_seleccion)
+```
+
+Nos quedaron 61905 observaciones y 9 variables, como era esperado.
+
+## Primer Análisis exploratorio: Correlación y valores faltantes 
+
+Veamos la cantidad de valores únicos y de valores faltantes de cada variable
+
+```{r}
+summary(datos_seleccion)
+```
+
+La variable id es una variable identificatoria y tiene un valor único para cada instancia y no tiene faltantes. 
+
+La variable l3 es una variable que muestra el barrio porteño en el que se encuentra ubicada la propiedad. Tiene 355 faltantes. Veamos cuantos valores únicos tiene
+
+```{r}
+nrow(unique(datos_seleccion %>%
+              select(l3)))
+```
+La variable rooms muestra la cantidad de habitaciones que hay en la propiedad. Esta variable tiene muchos faltantes: 5314. Aparentemente toma valores enteros entre 1 y 32. Veamos su distribución rápidamente
+
+```{r}
+library(ggplot2)
+library(ggthemes)  
+library(ggrepel)   
+library(scales)
+
+ggplot(datos_seleccion, aes(x = rooms))+
+  geom_histogram() +
+  stat_bin(binwidth = 2)+
+  scale_y_continuous(limits = c(0, 3500))+
+  ggtitle('Histograma de la variable rooms')
+    
+```
+La mayoría de los valores se toman entre 1 y 4. Un valor muy superior a 10 pareciera ser raro
+
+
+Bedrooms tiene muchísimos faltantes: 25298, toma valores enteros, y se puede ver además que, si bien el tercer cuadrante se alcanza en 3, el máximo es 130, lo que no tiene sentido ya que supera ampliamente al máximo número de habitaciones que se contemplan en los datos. Esta variable parece tener baja calidad informativa, por lo que será removida en la etapa de limpieza. 
+
+La variable bathrooms también tiene bastantes faltantes (3196), y toma valores enteros, la gran mayoría entre 1 y 2. El máximo es 14
+
+Las variables numéricas surface_total y surface_covered denotan la superficie total y cubierta respectivamente, y tienen 3671 y 2975 valores faltantes. La variable target, price, también es numérica y no tiene valores faltantes. 
+
+Por último, la variable property_type es categórica, y por como preparamos los datos previamente, no tiene valores faltantes y puede tomar 3 valores: Departamento, que es lo más común, PH y Casa.
+
+Veamos ahora la correlación entre variables numéricas. Para eso tomemos solo variables de ese tipo
+
+```{r}
+str(datos_seleccion)
+```
+
+  ```{r}
+  datos_numericos <- datos_seleccion %>%
+    select(rooms, bedrooms,bathrooms, surface_total, surface_covered, price)
+    
+  ```
+
+
+Cargamos la librería corrr y medimos la correlación entre las variables
+
+```{r}
+#Instalación de corrr
+#install.packages('corrr')
+
+
+library(corrr)
+
+
+datos_numericos %>% 
+ correlate() %>% 
+  shave() %>% 
+  fashion() 
+
+
+
+```
+Veamos ahora un gráfico
+```{r}
+datos_numericos %>% 
+ correlate() %>% 
+  rplot()
+```
+Parece haber una fuerte correlación positiva entre bathrooms y rooms, con una correlación de 0.92. El segundo par de variables que mejor se correlaciona es surface_total y surface_covered, seguidos de cerca por bathrooms y bedrooms, con correlaciones respectivas de 0.69 y 0.63. 
+
+Notar que todas las variables que se correlacionan lo hacen positivamente. Esto tiene sentido ya que todas estas son variables que, a gran escala y desde distintas perspectivas, cuantifican el ''tamaño'' de la propiedad.
+
+Respecto a la variable price, esta no se correlaciona muy bien con las otras variables numéricas. No se correlaciona en absoluto con las variables surface_total y surface_covered, ya que su correlación en ambos casos es menor a 0.1 en valor absoluto. Sin embargo, price sí se correlaciona positivamente en forma moderada con las variables rooms, bedrooms y bathrooms, con correlaciones de 0.30, 0.34 y 0.42 respectivamente. 
+
+La baja correlación de price con las otras variables es preocupante, ya que es la variable que queremos explicar. En las siguientes secciones veremos que podemos hacer para tratar con este problema.
+
+## Limpieza de datos
+
+Vamos a comenzar rápidamente eliminando la variable bedrooms, la cual recordemos que tenía una cantidad considerablemente grande de outliers y estaba muy correlacionada a rooms, por lo que si usamos solamente rooms en nuestro modelo no deberíamos perder demasiado.
+
+```{r}
+datos_sin_bed <- datos_seleccion %>%
+  select(-bedrooms)
+```
+
+Procedemos a eliminar los faltantes de las otras variables (https://www.edureka.co/community/634/how-to-remove-na-values-with-dplyr-filter).
+
+```{r}
+datos_sin_faltantes <- datos_sin_bed %>%
+  drop_na()
+```
+Por último, quitamos las observaciones que cumplan surface_total < surface_covered, ya que una propiedad no puede cubrir más superficie que la del terreno a la que está restringida.
+
+```{r}
+datos_limpios <- datos_sin_faltantes %>%
+  filter((surface_total < surface_covered) == FALSE)
+```
+
+Veamos como quedó nuestro dataset tras realizar esta limpieza
+
+```{r}
+glimpse(datos_limpios)
+```
+ 
+ Tenemos 8 variables y 50828 observaciones
+ 
+```{r}
+summary(datos_limpios)
+```
+ No encontramos faltantes en ninguna de las 8 variables.
+ 
+## Segundo Análisis exploratorio: análisis de las variables numéricas
+
+Armemos la variable precio_en_miles que cuenta el precio en miles de dólares. Observemos los valores de sus cuantiles, máximo y mínimo. A partir de eso, vamos a estimar los límites inferior y superior para el cálculo de outliers univariados, que los calculamos usando las fórmulas liminf = Q1 - 1.5 IQR, y limsup = Q3 + 1.5 IQR.
+ 
+```{r}
+datos_limpios<- datos_limpios %>%
+  mutate(precio_en_miles = price/1000)
+
+datos_precio_en_miles <- datos_limpios %>%
+  summarise(Variable = 'precio_en_miles', Minimo = quantile(precio_en_miles)[1], Q1 = quantile(precio_en_miles)[2], Mediana= quantile(precio_en_miles)[3], Media = mean(precio_en_miles), Q3 = quantile(precio_en_miles)[4], Maximo = quantile(precio_en_miles)[5])
+
+
+limites <- datos_precio_en_miles %>%
+  mutate(IQR = Q3-Q1, liminf = Q1-1.5*IQR, limsup = Q3+1.5*IQR)
+
+limites
+```
+ Se puede observar que el valor mínimo posiblemente sea un dato mal introducido. Ya que una propiedad es muy raro que valga solo 6 mil dolares. El máximo es 6000, que si bien se escapa mucho del tercer cuartil en términos del rango intercuantil, puede ser algo posible para una propiedad muy extensa.
+
+También vemos que la media, que es de 251.6, es bastante superior a la mediana, que es 170. Esto se debe a esos valores atípicos muy elevados provocan un corrimiento de la media por encima de la mediana.
+ 
+
+
+ Veamos como está distribuida la variable en términos de un histograma, agrupando por tipo de propiedad
+ 
+```{r}
+ggplot(datos_limpios, aes(x = precio_en_miles, group = property_type, fill = property_type))+
+  geom_histogram() +
+  scale_y_continuous(limits = c(0, 35000))+
+  ggtitle('Histograma de la variable precio_en_miles')
+```
+ 
+ Se puede ver que la gran mayoría de los valores se encuentra entre 0 y 500. Eso podía deducirse también al observar el que el tercer cuartil es 270.
+ 
+ Agrupemos ahora por tipo de propiedad
+ 
+```{r}
+datos_limpios %>%
+  group_by(property_type) %>%
+  summarise(Minimo = quantile(precio_en_miles)[1], Q1 = quantile(precio_en_miles)[2], Mediana= quantile(precio_en_miles)[3], Media = mean(precio_en_miles), Q3 = quantile(precio_en_miles)[4], Maximo = quantile(precio_en_miles)[5])
+```
+ Se puede ver que la propiedad de 6 mil dolares era un departamento. Sacando la propiedad de 6 millones de dolares, que  también es un departamento, podemos ver que el tipo de propiedad pareciera influir en el precio de la misma: Los valores de los cuartiles en las propiedades de tipo casa son superiores a los valores para los otros tipos de propiedades.
+ 
+ Observemos ahora las diferencias entre los tipos de propiedades mirando los boxplots comparativos
+ 
+```{r}
+ggplot(datos_limpios, aes(x = property_type,y = precio_en_miles, group = property_type, fill = property_type))+
+  geom_boxplot() +
+  scale_y_continuous(limits = c(0, 6000))+
+  ggtitle('Boxplots comparativos')
+
+```
+Acá se puede ver que la caja de la variable casa se encuentra bastante por encima de las otras cajas, y concentra más registros entre la mediana y el tercer cuartil que entre el primer cuartil y la mediana. De todas formas, la variable Departamento pareciera tener más outliers. También se puede ver que todos los outliers son superiores, esto se debe a que la forma de calcular los outliers usando la información del boxplot nos daba que el precio en miles de dolares tendría que dar negativo para tener un outlier inferior.
+
+Seleccionemos ahora los datos numéricos para comparar sus gráficos usando ggpairs.
+
+```{r}
+#install.packages('GGally')
+library(GGally)
+datos_limpios_numericos <- datos_limpios %>%
+    select(rooms,bathrooms, surface_total, surface_covered, price, precio_en_miles)
+
+ggpairs(datos_limpios_numericos)
+```
+Como habíamos visto previamente, no hay mucha correlación entre la variable price y las variables relacionadas a la superficie. Hay bastante correlación con las variables rooms y bathrooms, pero se puede ver en todos los casos que existen valores muy alejados en la parte inferior izquierda de cada gráfico que involucra a price (o a precio_en_miles). El tratamiento de esos outliers se hará en la nueva sección que comenzaremos a continuación.
+
+## Outliers
+
+Veamos más de cerca el gráfico entre precio_en_miles y surface_total
+
+
+```{r}
+ggplot(datos_limpios, aes(y = precio_en_miles, x = surface_total, color = 'red'))+
+  geom_point()+
+  ggtitle('Gráfico de dispersión de superficie total y precio en miles de dólares')
+```
+ Se pueden observar muchas propiedades con poca superficie y muy elevado precio, y unas pocas propiedades con muchísima superficie y relativamente bajo precio. Para nuestro análisis podría llegar a convenir remover esas observaciones
+ 
+ 
+ Analicemos las variables precio_en_miles, rooms y surface_total. Vamos a remover ooutliers univariados que estén por fuera del intervalo formado por los límites inferior y superior del boxplot, es decir todos los valores que estén por debajo de 1.5 rangos intercuantiles del primer cuartil o aquellos que estén por encima de 1.5 rangos intercuantiles del tercer cuartil. 
+ 
+ Recordemos que el entre el primer y tercer cuartil se encuentran la mitad de los datos centrados en la media. Valores muy alejados de dicho intervalo podrían perturbar las relaciones que obtengamos en nuestras variables, lo que en consecuencia deterioraría la performance del modelo lineal. Dado que no vamos a usar un método robusto del modelo lineal, preferimos tomar 1.5 rangos intercuantiles y no 3, donde tendríamos una cantidad mayor de valores atípicos.  
+ 
+```{r}
+datos_rooms <- datos_limpios %>%
+  summarise(Variable = 'rooms', Minimo = quantile(rooms)[1], Q1 = quantile(rooms)[2], Mediana= quantile(rooms)[3], Media = mean(rooms), Q3 = quantile(rooms)[4], Maximo = quantile(rooms)[5])
+
+datos_surface_total <- datos_limpios %>%
+  summarise(Variable = 'surface_total', Minimo = quantile(surface_total)[1], Q1 = quantile(surface_total)[2], Mediana= quantile(surface_total)[3], Media = mean(surface_total), Q3 = quantile(surface_total)[4], Maximo = quantile(surface_total)[5])
+
+datos_variables <- rbind(datos_precio_en_miles, datos_rooms, datos_surface_total)
+datos_variables <- datos_variables %>%
+  mutate(IQR = Q3-Q1, liminf = Q1-1.5*IQR, limsup = Q3+1.5*IQR)
+
+datos_variables
+```
+Como los valores de estas variables tienen que ser positivos, vamos a filtrar directamente con valores mayores a 0 en vez de usar los límites inferiores que dieron negativo
+
+```{r}
+datos_finales <- datos_limpios %>%
+  filter(0 < precio_en_miles, precio_en_miles <= 496.5, 0 < rooms, rooms <= 7, 0 < surface_total, surface_total <= 197.5)
+```
+
+## Tercer Análisis exploratorio: nuevo análisis tras remover outliers univariados
+
+Analicemos las tres variables en las que nos centramos en la sección anterior ahora que quitamos outliers
+
+```{r}
+datos_precio_en_miles2 <- datos_finales %>%
+  summarise(Variable = 'precio_en_miles', Minimo = quantile(precio_en_miles)[1], Q1 = quantile(precio_en_miles)[2], Mediana= quantile(precio_en_miles)[3], Media = mean(precio_en_miles), Q3 = quantile(precio_en_miles)[4], Maximo = quantile(precio_en_miles)[5])
+
+datos_rooms2 <-  datos_finales %>%
+  summarise(Variable = 'rooms', Minimo = quantile(rooms)[1], Q1 = quantile(rooms)[2], Mediana= quantile(rooms)[3], Media = mean(rooms), Q3 = quantile(rooms)[4], Maximo = quantile(rooms)[5])
+
+datos_surface_total2 <-  datos_finales %>%
+  summarise(Variable = 'surface_total', Minimo = quantile(surface_total)[1], Q1 = quantile(surface_total)[2], Mediana= quantile(surface_total)[3], Media = mean(surface_total), Q3 = quantile(surface_total)[4], Maximo = quantile(surface_total)[5])
+
+datos_variables2 <- rbind(datos_precio_en_miles2, datos_rooms2, datos_surface_total2)
+datos_variables2 <- datos_variables2 %>%
+  mutate(IQR = Q3-Q1, liminf = Q1-1.5*IQR, limsup = Q3+1.5*IQR)
+
+datos_variables2
+```
+Se puede observar que la distancia entre el maximo de cada variable y su nuevo limite superior es menor (notar que, al quitar outliers se generan outliers nuevos). Nuevamente la media está por encima de la mediana, por el efecto que provocan los nuevos outliers superiores, pero la diferencia pareciera ser menor en cada variable.
+
+Realicemos el análisis en precio en miles separando nuevamente por tipo de propiedad
+
+```{r}
+datos_finales %>%
+  group_by(property_type) %>%
+  summarise(Minimo = quantile(precio_en_miles)[1], Q1 = quantile(precio_en_miles)[2], Mediana= quantile(precio_en_miles)[3], Media = mean(precio_en_miles), Q3 = quantile(precio_en_miles)[4], Maximo = quantile(precio_en_miles)[5])
+```
+Se puede ver que ya no tenemos esa casa de 6 mil dolares, por ende era una observacion con muchísima superficie total o muchas habitaciones, lo que no tendría sentido dado su precio muy bajo. Hicimos bien en quitarla!
+
+Veamos ahora como quedo el histograma de la variable precio_en_miles tras quitar outliers
+
+```{r}
+ggplot(datos_finales, aes(x = precio_en_miles, group = property_type, fill = property_type))+
+  geom_histogram() +
+  stat_bin(bins = 15)+
+  scale_y_continuous(limits = c(0, 10000))+
+  ggtitle('Nuevo histograma de precio_en_miles')
+```
+Al quitar los valores por encima de 500, que nos ocupaban más del 90% del espacio horizontal, nuestro histograma luce mucho más comprensible. Se puede ver además que a el descenso de casos al tomar un bin más a la derecha es bastante gradual, por lo que podemos asumir que los outliers que tenemos ahora son provenientes, en su gran mayoría, de datos reales.
+
+Veamos ahora el gráfico de pares tras remover outliers
+
+```{r}
+datos_finales_numericos <- datos_finales %>%
+    select(rooms,bathrooms, surface_total, surface_covered, price, precio_en_miles)
+
+ggpairs(datos_finales_numericos)
+```
+
+A simple vista notamos que, tras extraer outliers univariados, la correlación entre las variables de superficie con las variables de precio subió exponencialmente (casi 10 veces). A la variable bathrooms no le hicimos un tratamiento de outliers y por ende se puede ver que los gráficos de pares que conciernen a esa variable están un poco desbalanceados.
+
+## Modelo Lineal
+
+En esta sección vamos a realizar modelos lineales para intentar explicar la relación entre el precio de las propiedades, medido en miles de dólares, y otras variables de nuestro dataset. 
+
+Vamos a comenzar analizando precio_en_miles en funcion de la variable rooms
+
+```{r}
+modelo_rooms <- lm(formula = precio_en_miles ~ rooms, data = datos_finales)
+
+summary(modelo_rooms)
+```
+Lo que podemos interpretar de este modelo es que podemos estimar el valor de una propiedad en miles de dólares multiplicando  52.29 por el total de  habitaciónes y a eso sumarle 49.51. De esto podemos deducir que una propiedad costaría en promedio un poco más de 50 mil dólares que otra propiedad que tenga una habitación menos.
+
+Se puede ver además que el p-valor es muy pequeño, por ende la relación entre el precio en miles de dólares y la variable rooms es estadísticamente significativa. 
+
+Veamos ahora el intervalo de confianza usando la librería tidymodels
+
+```{r}
+#install.packages('tidymodels')
+library(tidymodels)
+tidy(modelo_rooms, conf.int = T, conf.level = 0.95)
+```
+
+Como se puede ver, el intervalo de confianza de la pendiente está muy lejos de contener al 0.
+
+Para obtener una mejor interpretación realicemos un gráfico
+
+```{r}
+datos_finales %>% ggplot(., aes(x = rooms, y = precio_en_miles)) + 
+  geom_abline(intercept = modelo_rooms$coefficients[1], slope = modelo_rooms$coefficients[2], color="forestgreen", size=1.5) + 
+  geom_point() + 
+  theme_bw() +
+  scale_x_continuous(limits = c(0,8)) +
+  scale_y_continuous(limits = c(0,600)) +
+  labs(title="Modelo Lineal Simple: rooms", x="Número de habitaciones", y="Precio en miles de dólares") 
+```
+A nuestro criterio, y a partir de lo que se ve en este gráfico, este modelo resulta ser bastante sesgado.
+Analicemos la validación de los supuestos
+
+```{r}
+plot(modelo_rooms)
+```
+
+Los residuos parecieran tener distribución normal basándonos en lo  que observamos del qqplot.  Análicemos también si la correlación de las variables es significativamente distinta de 0 usando el test de correlación de Spearman.
+
+```{r}
+cor.test(datos_finales$precio_en_miles, datos_finales$rooms, method = "pearson")
+
+```
+
+Tenemos evidencia significativa de que las variables se correlacionan. Veamos ahora el modelo poniendo el precio en miles de dólares en función de la variable surface_total
+
+```{r}
+modelo_surface <- lm(formula = precio_en_miles ~ surface_total, data = datos_finales)
+
+summary(modelo_surface)
+```
+Se puede ver que cada metro cuadrado extra agrega en promedio alrededor de 2000 dolares más al precio de una propiedad. Veamos los intervalos de confianza y grafiquemos el modelo
+
+
+```{r}
+
+tidy(modelo_surface, conf.int = T, conf.level = 0.95)
+```
+Nuevamente, el intervalo correspondiende a la pendiente no contiene al 0.
+
+```{r}
+datos_finales %>% ggplot(., aes(x = surface_total, y = precio_en_miles)) + 
+  geom_abline(intercept = modelo_surface$coefficients[1], slope = modelo_surface$coefficients[2], color="forestgreen", size=1.5) + 
+  geom_point() + 
+  theme_bw() +
+  scale_x_continuous(limits = c(0,200)) +
+  scale_y_continuous(limits = c(0,600)) +
+  labs(title="Modelo Lineal Simple: Surface_total", x="Total de metros cuadrados", y="Precio en miles de dólares") 
+
+```
+Este modelo también tiene sesgo y pareciera que los errores no son homocédasticos: a más metros cuadrados mayor es el error del modelo. Análicemos la validación de los supuestos
+```{r}
+plot(modelo_surface)
+```
+
+Los residuos tampoco parecen estar normalmente distribuidos. Realicemos el test de correlación de Spearman con la variable surface_total y verifiquemos que la correlación es significativamente distinta de 0.
+
+
+
+```{r}
+cor.test(datos_finales$precio_en_miles, datos_finales$surface_total, method = "pearson")
+
+```
+
+
+Para terminar de decidir por un modelo, vamos a comparar los coeficientes R². 
+
+El error cuadrado múltiple del modelo de rooms es 0.3877, mientras que el del modelo de superficie total es 0.5743. Esto significa que el modelo de regresión basado en la superficie total en metros cuadrados tiene más capacidad para predecir el precio de la propiedad. Vamos a echarle un vistazo más a cada modelo usando la función glance del paquete broom.
+
+```{r}
+glance(modelo_rooms)
+```
+```{r}
+glance(modelo_surface)
+```
+## Conclusión final
+
+Basándonos en el mayor valor del coeficiente R² y en nuestra observación de los gráficos de los modelos, concluimos que el modelo donde utilizamos la superficie total es mejor para predecir y explicar el precio en miles de dólares de las propiedades. 

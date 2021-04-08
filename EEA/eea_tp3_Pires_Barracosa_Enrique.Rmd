@@ -1,0 +1,410 @@
+---
+title: "eea2020_tp3_Pires_Barracosa_Enrique"
+output: html_document
+---
+
+En este trabajo analizaremos una base de datos con información relacionada al Titanic. Nuestro objetivo será predecir, entre los tripulantes, quienes sobrevivirán y quienes no. Para eso probaremos distintos métodos de regresión logística para predecir la probabilidad de que una persona sobreviva, y luego, basándonos en distintas métricas, elegiremos el punto de corte que consideremos adecuado.
+
+## Preparación de los Datos
+
+Comenzamos cargando las librerías Tidyverse y Lubridate
+
+```{r}
+library(tidyverse)
+library(lubridate)
+```
+
+Cargamos el dataset de train y le damos un vistazo.
+  
+```{r}
+tc_train <- read.csv('titanic_complete_train.csv')
+glimpse(tc_train)
+
+```
+
+Nos encontramos con un dataset compuesto por 891 observaciones. Cada observación está descrita por 12 variables: **PassangerID** (identificadora), **Survived**, **Pclass**, que serían variables categóricas, **Name** (de tipo carácter), **Sex** (categórica), **Age**, **SibSp**, **Parch** (Numéricas). **Ticket** (categórica), **Fare** (Numérica), **Cabin** y **Embarked** (categóricas). 
+
+Vamos a trabajar con las variables **PassengerId**, **Survived**, **Pclass**, **Sex**, **Age**, **SibSp**, **Parch**, **Fare** y **Embarked**. Recordemos que SibSp representa la cantidad de hermanos/as y esposas del tripulante, Parch representa la cantidad de hijos/padres a bordo, Fare la tarifa, y Embarked el puerto de la embarcación (codificado). Aprovechamos también para cambiar el tipo de las variables Survived, Pclass y Embarked a su tipo correcto que es factor.
+
+```{r}
+tc_train <- tc_train %>%
+  select(PassengerId, Survived, Pclass, Sex, Age, SibSp, Parch, Fare, Embarked) %>%
+  mutate(Survived = as.factor(Survived), Pclass = as.factor(Pclass), Embarked = as.factor(Embarked))
+glimpse(tc_train)
+
+```
+
+Observemos como se relacionan las variables Survived, Pclass, Sex, Age, Fare mediante un gráfico de pares. 
+
+```{r}
+#install.packages('GGally')
+library(GGally)
+ggpairs(
+  
+tc_pairs <- tc_train %>%
+  select(Survived, Pclass, Sex, Age, Fare))
+
+
+g <- ggpairs(tc_pairs,  title = "Correlograma de variables",
+        mapping = aes(colour= Survived)) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) + 
+  theme_bw()
+# hacemos un loop para cambiar los colores del gráfico
+for(i in 1:g$nrow) {
+  for(j in 1:g$ncol){
+    g[i,j] <- g[i,j] + 
+      scale_fill_brewer(palette="Set1") +  
+      scale_color_brewer(palette="Set1")
+        }
+}
+g
+```
+
+La mayoría de los tripulantes no sobrevivieron, y de los no sobrevivientes, la gran mayoría forma parte de la tercer clase de tripulación. Podemos ver que la tercer clase de tripulación es la que más proporción de muertos tiene, siendo la primer clase la que tiene más proporción de supervivientes. Respecto al sexo, la gran mayoría de los no sobrevivientes son hombres y la mayoría de los sobrevivientes son mujeres. Se puede observar que la mayoría de las mujeres sobrevivieron y la gran mayoría de los hombres no lo hizo. La mayoría  de la tripulación parece tener edad entre 20 y 40 años. Se puede observar una mayor proporción de muertos en los tripulantes de alrededor de 30 años, que pertenecen a la tercer clase de tripulación en su mayoría. Respecto a Fare, podemos ver que los tripulantes que pagaron tarifas más bajas tienen más tendencia a morir que sobrevivir. A medida que sube el precio de la tarifa la proporción de muertos baja.  Se puede notar también que los sobrevivientes pagan en general más en tarifas que los no sobrevivientes 
+
+Veamos rápidamente la distribución de sobrevivientes
+
+```{r}
+tc_train %>% 
+  group_by(Survived) %>% 
+  summarise(numero_casos=n())
+```
+
+
+Como habíamos notado, la mayoría de los pasajeros no sobrevivieron. El valor 0 en Survived representa 'no sobrevivió'. De las 891 observaciones, 549 (el 61.61 %) no sobrevivió. La clase **Survived** no está perfectamente balanceada, pero consideramos que no es necesario hacer ovsersampling o undersampling ya que el desbalanceo no es muy grande.
+
+Usando la función initial_split del paquete rsample de tidymodels, partimos el dataset tc_train en entrenamiento y validación. Usaremos una proporción 70/30.
+
+```{r}
+library(tidymodels)
+
+set.seed(102191)
+# Partición Train y Test, indicando proporción
+train_test <- initial_split(tc_train, prop = 0.7)
+# armamos dataframe de testeo y entrenamiento
+df_train <- training(train_test)
+df_val <- testing(train_test)
+
+```
+Analicemos las distribuciones de estos datasets. Para el dataset original la proporción de no sobrevivientes era 61.61 %. Veamos que ocurre en el dataset df_train que acabamos de generar.
+
+
+```{r}
+df_train %>% 
+  group_by(Survived) %>% 
+  summarise(numero_casos=n())
+```
+
+Siguen habiendo más muertos que sobrevivientes. La proporción de no sobrevivientes es de $100*396/(396+228) = 63.46\%.$ Bastante similar que en el dataset de train original. Veamos rápidamente qué sucede con el dataset df_val.
+
+```{r}
+df_val %>% 
+  group_by(Survived) %>% 
+  summarise(numero_casos=n())
+```
+En este caso, la proporción de no sobrevivientes es de $100*153/(153+114) = 57.30 \%.$ La distribución de muertos es menor en este dataset pero no notamos que las distribuciones sean marcadamente diferentes.
+
+## Primeras predicciones
+
+Comencemos realizando un modelo de regresión logística usando las variables **Pclass**, **Sex** y **Age**. Para eso cargamos el paquete modelr
+
+
+
+```{r}
+library(modelr)
+logit_formula <- formulas(.response = ~ Survived, 
+                         variables = ~ Pclass + Sex + Age  
+                         )
+modelo_CSA <- data_frame(logit_formula) %>% 
+  mutate(models = names(logit_formula), 
+         expression = paste(logit_formula), # columna con las expresiones de las formulas
+         mod = map(logit_formula, ~glm(., family = 'binomial', data = df_train))) %>%
+  mutate(tidy = map(mod,tidy)) %>%
+  unnest(tidy) %>% 
+  mutate(estimate=round(estimate,5),
+         p.value=round(p.value,4)) %>%
+  select(expression, term, estimate, std.error, statistic, p.value) #Seleccionamos las variables relevantes para el análisis
+  
+modelo_CSA
+
+```
+Analicemos rápidamente los coeficientes del modelo:
+
+* Se puede ver  que los p-valores respectivos a cada coeficiente dan mucho menos que 0.05. Por lo que todas las variables son significativas para el modelo. 
+
+* El término del intercept es positivo. Para que las variables **Pclass2**, **Pclass3**, **Sexmale** y **Age** valgan 0, necesitamos que  el tripulante sea de primera clase, sea mujer y tenga 0 años. De cumplirse esas condiciones, el modelo nos indica que es más probable que esta bebe de primera clase sobreviva a que muera. 
+
+* Las variables dummies **Pclass2** y **Pclass3** representan el efecto de cambiar la clase del tripulante de primera clase a segunda calse y tercera clase respectivamente, manteniendo constante las otras variables. Como ambos estimadores son negativos, de esto deducimos que si cambiamos la clase de un tripulante de primera a segunda o tercera, manteniendo las otras variables constantes, entonces la probabilidad de que este sobreviva disminuirá. Notar además que el estimador de **Pclass3** es aún menor que el de **Pclass2**, por lo que los miembros de tercer clase tienen aún más probabilidades de  morir que los de segunda clase, asumiendo que las otras variables tienen los mismos valores.
+
+* El estimador de la variable Dummy **Sexmale** es negativo. Esto quiere decir que si tenemos un hombre y una mujer de similar clase y edad, entonces la mujer tendrá más probabilidades de sobrevivir.
+
+* La variable **Age** tiene un estimador negativo. Esto significa que, a mayor la edad, menor es la probabilidad de supervivencia. Así, por ejemplo, un hombre adulto tendrá menos probabilidades de sobrevivir que su hijo si ambos viajan en la misma clase. 
+
+* ¿Quién tiene una mayor probabilidad de supervivencia? Rose que es una mujer de 17 años que viaja en primera clase o Jack que es un hombre de 20 años viajando en tercera clase.
+
+Jack, siendo un hombre de 20 años viajando en tercera clase, tendría menos probabilidades de sobrevivir que un hombre de 17 años en tercera clase, ya que este es más joven. Este hombre de 17 años de tercera clase tendría menos probabilidades de sobrevivir que un hombre también de 17 años pero de primera clase. De todas formas, este hombre de 17 años de primera clase tendría menos probabilidades de sobrevivir que Rose, ya que Rose también tiene 17 años y es de primera clase, pero no es un hombre. Así que en definitiva concluímos que, desafortunadamente para Jack, es más probable que Rose sobreviva. Veamos cuantos hombres como Jack sobreviven.
+
+```{r}
+Jack <- df_train %>%
+  filter(Age == 20, Sex == 'male', Pclass == 3)
+
+Jack
+```
+
+Solo 1 de 8 sobreviven. Veamos las mujeres como Rose.
+
+```{r}
+Rose <- df_train %>%
+  filter(Age == 17, Sex == 'female', Pclass == 1)
+
+Rose
+```
+
+Las 2 mujeres sobreviven. Veamos ahora qué probabilidad de sobrevivir le da el modelo a cada uno.
+
+```{r}
+logit_formula <- formulas(.response = ~ Survived, 
+                         PSA = ~ Pclass + Sex + Age,
+                         )
+modelo_CSA <- data_frame(logit_formula) %>% 
+  mutate(models = names(logit_formula), 
+         expression = paste(logit_formula), # columna con las expresiones de las formulas
+         mod = map(logit_formula, ~glm(., family = 'binomial', data = df_train))) %>%
+  mutate(tidy = map(mod,tidy)) 
+
+
+modelo_CSA <- modelo_CSA %>% 
+  mutate(pred= map(mod,augment, type.predict = "response"))
+```
+```{r}
+
+predicts <- modelo_CSA$pred$PSA
+
+predicts %>%
+  filter(Age == 20, Sex == 'male', Pclass == 3)
+```
+La probabilidad de que sobreviva un hombre como Jack es 0.1019. Veamos para Rose
+
+```{r}
+predicts %>%
+  filter(Age == 17, Sex == 'female', Pclass == 1)
+```
+La probabilidad de que una mujer como Rose sobreviva es 0.9529. Claramente es más probable que Jack muera.
+
+## Generación de modelos
+
+En esta sección vamos a generar varios modelos de regresión logística y los compararemos entre sí. En uno de los modelos vamos a utilizar solamente las variables **Sex** y **Age**. En otro modelo vamos a incluir **Age** y **Sex**, como habíamos hecho antes, pero esta vez utilizaremos **Fare** en vez de **Pclass**. Por último, vamos a observar un modelo con 5 variables: las ya utilizadas **Sex**, **Age** y **Pclass**, y las variables **SibSp** y **Parch**. Vamos a incluir al modelo que usaba **Sex**, **Age** y **Pclass** para realizar comparaciones.
+
+```{r}
+
+logit_formula <- formulas(.response = ~ Survived, 
+                         PSA = ~ Pclass + Sex + Age,
+                         SexAge = ~ Sex + Age,
+                         FARE = ~ Fare + Sex + Age,
+                         BIG5 = ~ Pclass + Sex + Age + SibSp + Parch
+                         )
+modelos <- data_frame(logit_formula) %>% 
+  mutate(models = names(logit_formula), 
+         expression = paste(logit_formula), # columna con las expresiones de las formulas
+         mod = map(logit_formula, ~glm(., family = 'binomial', data = df_train))) %>%
+  mutate(tidy = map(mod,tidy)) 
+
+```
+
+Analicemos la deviance explicada de cada modelo
+
+```{r}
+modelos <- modelos %>% 
+  mutate(glance = map(mod,glance))
+# Obtener las medidas de evaluacion de interes
+modelos %>% 
+  unnest(glance) %>%
+  # Calculamos la deviance explicada
+  mutate(perc_explained_dev = 1-deviance/null.deviance) %>% 
+  select(expression, null.deviance, logLik, deviance, df.residual, perc_explained_dev) %>% 
+  arrange(deviance)
+```
+
+Podemos observar que el modelo que utiliza 5 variables es el que minimiza la deviance. El modelo de 3 variables que creamos originalmente tiene una deviance no mucho más alta, mientras que los modelos que no utilizan **Pclass** tienen una deviance considerablemente más alta. En términos de la deviance explicada, el mejor modelo es el modelo de 5 variables, lo que tiene sentido por ser el modelo con más variables. Por ese motivo vamos a trabajar con ese modelo. Veamos rápidamente si tiene alguna variable poco significativa
+
+```{r}
+modelos %>%
+  filter(models == 'BIG5') %>%
+  select(-glance) %>%
+  unnest(tidy) %>% 
+  mutate(estimate=round(estimate,5),
+         p.value=round(p.value,4)) %>%
+  select(term, estimate, std.error, statistic, p.value) #Seleccionamos las variables relevantes para el análisis
+
+
+```
+
+Se puede ver que el P-valor asociado a la varaible Parch es considerablemente mayor que 0.05, mientras que el de SibSp es un poco más grande que 0.05. Ninguna de las variables parecieran ser significativas para el modelo. Por esto podríamos considerar al modelo original con 3 variables como el más apropiado, ya que todas sus variables eran significativas y no tiene una deviance mucho mayor que el modelo con 5 variables. De todos modos vamos a quedarnos con el modelo que utiliza 5 variables para hacer nuestras predicciones, ya que consideramos que la deviance extra que explica el modelo es relevante. 
+
+## Evaluación del modelo
+
+Comencemos añadiendo las predicciones usando augment.
+
+```{r}
+modelos <- modelos %>% 
+  mutate(pred= map(mod,augment, type.predict = "response"))
+```
+```{r}
+#Observaciones con probabilidad más alta del modelo BIG5
+modelos$pred$BIG5 %>% arrange(desc(.fitted)) %>% head(20)
+
+```
+
+Se puede ver que los casos más probables son mujeres menores de 40 años de primera clase. Se puede ver que de los 20 casos más probables, irónicamente, solo el de mayor probabilidad no sobrevivió. Esto puede deberse a que se trata de un bebé, por ende es más vulnerable que una mujer joven, y como el estimador asociado a la edad es negativo, el modelo le da una probabilidad alta de supervivencia a los bebés. 
+
+```{r}
+#Guardamos la predicción del modelo 
+
+prediction_BIG5 <- modelos %>% 
+  filter(models=="BIG5") %>% 
+  unnest(pred, .drop=TRUE)
+```
+
+Calculemos la curva ROC de este modelo.
+
+```{r}
+library(pROC)
+
+roc5 <- roc(response=prediction_BIG5$Survived, predictor=prediction_BIG5$.fitted)
+
+ggroc(list('Modelo de 5 variables'=roc5), size=1) + 
+  geom_abline(slope = 1, intercept = 1, linetype='dashed') +
+  theme_bw() + 
+  labs(title='Curva ROC', color='Modelo')
+```
+
+Se puede notar un aumento acelerado en la sensibilidad cuando la especificidad es menor a 0.75, en donde detectamos aproximadamente el 80% de los verdaderos positivos. Si establecemos un punto de corte con una especificidad menor a 0.75, la proporción extra de verdaderos positivos que obtenemos  en comparación con los nuevos falsos positivos (siempre respecto de un punto de corte de especificidad igual a 0.75) no es muy alta.
+
+Veamos ahora el área bajo la curva.
+
+```{r}
+print(paste('Área bajo la curva: Modelo con 5 variables', round(roc5$auc,3)))
+
+```
+
+Realicemos ahora un violin plot
+
+```{r}
+library(cowplot)
+
+# graficamos el modelo de 5 variables
+violin_5 = ggplot(prediction_BIG5, aes(x=Survived, y=.fitted, group=Survived, fill=factor(Survived))) + 
+  geom_violin() +
+  theme_bw() +
+  guides(fill=FALSE) +
+  labs(title='Violin plot', subtitle='Modelo de 5 variables', y='Predicted probability')
+
+# mostramos ambos
+plot_grid(violin_5)
+```
+
+En el eje *x* tenemos la clase verdadera: Si no sobrevivió (0), pintado en rojo, y si sobrevivió (1), pintado en turquesa. En el eje *y* tenemos la probabilidad predicha por el modelo. El ancho de cada grupo del gráfico representa la magnitud de observaciones de esa clase que tienen esa probabilidad (suavizando por continuidad). 
+
+Podemos observar para los casos con probabilidad estimada menor a 0.25 que tenemos una altísima cantidad de no supervivientes. Mientras que si tomamos una probabilidad estimada superior a 0.75 la cantidad de muertos es muy peqeuña. Por otro lado, la gran mayoría de los supervivientes tienen una probabilidad de sobrevivir estimada mayor a 0.30. A diferencia de los no sobrevivientes, no observamos una gran concentración de sobrevivientes en un intervalo de probabilidad estimada pequeño.
+
+## Elección del punto de corte
+
+Según lo que observamos en secciones anteriores, teníamos como tentativos puntos de corte 0.25, 0,30 y 0.75. Ya que debajo de 0.25 de probabilidad estimada se concentraban muchos muertes, mientras que por encima de 0.75 la cantidad de muertes es muy baja. Para ayudar nuestra predicción vamos a observar gráficamente las medidas de **Accuracy**, **Recall**, **Precision** y **Specificity** en el dataset de validación. Para eso comencemos estimando las probabilidades de cada observación en ese dataset.
+
+```{r}
+model_BIG5 <- glm(logit_formula$BIG5, family = 'binomial', data = df_train)
+
+table= augment(x=model_BIG5, newdata=df_val, type.predict='response') 
+table
+```
+
+Calculemos ahora sí las métricas en función de la probabilidad de corte.
+
+
+```{r}
+#install.packages('OneR')
+library(OneR)
+library(rlang)
+library(caret)
+
+
+prediction_metrics <- function(cutoff, predictions=table){
+  tabla <- predictions %>% 
+    mutate(predicted_class=if_else(.fitted>cutoff, 1, 0) %>% as.factor(),
+           Survived= factor(Survived))
+  
+  confusionMatrix(table(tabla$predicted_class, tabla$Survived), positive = "1") %>%
+    tidy() %>%
+    select(term, estimate) %>%
+    filter(term %in% c('accuracy', 'sensitivity', 'specificity', 'precision')) %>%
+    mutate(cutoff=cutoff)
+  
+}
+
+cutoffs = seq(0.01,0.95,0.01)
+logit_pred= map_dfr(cutoffs, prediction_metrics)%>% mutate(term=as.factor(term))
+
+ggplot(logit_pred, aes(cutoff,estimate, group=term, color=term)) + geom_line(size=1) +
+  theme_bw() +
+  labs(title= 'Accuracy, Recall, Specificity y Precision', subtitle= 'Modelo de 5 variables', color="")
+```
+
+Vamos a comenzar observando cada una de las cuatro métricas por separado.
+
+* Recall (Sensitivity): Se puede observar una caída un poco abrupta del recall aproximadamente en el corte 0.65. Eso quiere decir que si tomamos una probabilidad superior a 0.65 estaríamos arriesgándonos a perder muchos potenciales sobrevivientes.
+
+* Accuracy: El accuracy pareciera maximizarse aproximadamente entre el corte 0.5 y el 0.55. Se puede ver, no obstante, que el accuracy permanece muy cerca del óptimo para cortes entre 0.45 y 0.65
+
+* Precision: La métrica sube de forma constante hasta el corte 0.65 donde comienza a estancarse un poco. Se corta con Recall en 0.45.
+
+* Specificity: El principal pico de crecimiento de esta métrica se da antes de la probabilidad de corte 0.25, por ende, cualquier probabilidad de corte superior a 0.25 puede ser considerada una buena elección. Después de ese pico de crecimiento, la métrica aumenta de forma constante hasta el corte 0.65 donde empieza a estancarse, de forma similar a como la hacía precision.
+
+
+
+La probabilidad de corte que vamos a usar es 0.6. En 0.6 el valor de la accuracy está muy cerca del óptimo, el recall todavía no alcanza su más abrupta caída, y la especificidad y precisión están cerca de llegar al punto donde comienzan a estancarse. Podríamos también tomar 0.45, donde se da el corte entre Recall y Precisión, pero consideramos que el corte de 0.6 es más acertado. Recordemos de todas formas que la probabilidad de corte depende de la situación y la importancia de cada tipo de error.
+
+Observemos la matriz de confusión del modelo con el corte que acabamos de establecer.
+
+```{r}
+sel_cutoff = 0.6
+# Clasificamos utilizamos el punto de corte
+table=table %>% 
+  mutate(predicted_class=if_else(.fitted>sel_cutoff, 1, 0) %>% as.factor(), 
+         default= factor(Survived))
+# Creamos la matriz de confusión
+confusionMatrix(table(table$predicted_class, table$Survived), positive = "1")
+```
+
+
+De los 153 muertos del dataset de validación, 144 fueron correctamente clasificados mientras que 9 fueron clasificados erróneamente como sobrevivientes. Por otro lado, de los 114 sobrevivientes, 75 fueron correctamente clasificados mientras que 39 no lo fueron. El accuracy del modelo es de 0.8202, que es significativamente superior al No Infortation Rate, que es de 0.573. El Recall es de 0.6579, la precision (Positive predictive value) es de 0.8929 y el specificity es de 0.9412. Podemos concluir que nuestro modelo tiene una accuracy aceptable, y que es muy bueno detectando quienes no sobreviven, aunque a cambio no es tan bueno detectando sobrevivientes.  
+
+## Evaluación del modelo
+
+Ahora veremos qué tan bueno es el modelo es el dataset que tenemos para testear. Comencemos cargándolo y haciendo las modificaciones necesarias que ya realizamos en el dataset de train.
+
+```{r}
+tc_test <- read.csv('titanic_complete_test.csv')
+
+tc_test <- tc_test %>%
+  select(PassengerId, Survived, Pclass, Sex, Age, SibSp, Parch, Fare, Embarked) %>%
+  mutate(Survived = as.factor(Survived), Pclass = as.factor(Pclass), Embarked = as.factor(Embarked))
+
+```
+
+Estimamos las probabilidades de sobrevivir de cada observación y, utilizando el corte 0.6 que fijamos anteriormente, hacemos las predicciones y armamos la matriz de confusión.
+
+```{r}
+sel_cutoff = 0.6
+
+# Agregamos la predicciones al dataset de testeo
+table= augment(x=model_BIG5, newdata=tc_test, type.predict='response') 
+# Clasificamos utilizamos el punto de corte
+table=table %>% 
+  mutate(predicted_class=if_else(.fitted>sel_cutoff, 1, 0) %>% as.factor(), 
+         Survived= factor(Survived))
+# Creamos la matriz de confusión
+confusionMatrix(table(table$predicted_class, table$Survived), positive = "1")
+```
+En este caso, de los 261 muertos, detectamos 233. Esto nos da una Specificity de 0.8927. Por otro lado, de los 157 sobrevivientes, detectamos 95 como tales y un total de 62 fueron clasificados como no sobrevivientes. Esto nos da un Recall de apenas 0.6051. El Accuracy del modelo esta vez es de 0.7847, que sigue siendo significativamente superior al No information Rate, mientras que la precision (Positive Predictive Value) es de 0.7723.
+
+Se puede observar que el modelo tiene una performance peor que en el dataset de validación respecto a todas las métricas. Esto es de esperarse ya que en ese dataset optimizamos la probabilidad de corte para que todas las métricas den razonablemente bien, lo que puede generar un poco de overfitting. Este modelo pareciera ser particularmente malo detectando sobrevivientes. En el análisis que hicimos con el dataset de validación ya teníamos una sospecha de eso, pero en este análisis el Recall fue aún más bajo. 

@@ -1,0 +1,650 @@
+---
+title: "Trabajo Práctico 2 EEA"
+output:
+  html_document:
+    df_print: paged
+---
+En este trabajo  vamos a analizar un conjunto de datos con información asociada a propiedades en venta. Nuestro objetivo será explicar la variación del precio de venta de dichas propiedades y buscaremos un modelo lineal múltiple que nos ayude a tal fin.
+
+
+## Preparación de los Datos
+
+Comenzamos cargando las librerías Tidyverse y Lubridate
+
+```{r}
+library(tidyverse)
+library(lubridate)
+```
+Cargamos los datasets de train y test. Le damos un vistazo al dataset de train.
+  
+```{r}
+properties_train <- read.csv('ar_properties_train.csv')
+properties_test <- read.csv('ar_properties_test.csv')
+glimpse(properties_train)
+
+```
+  
+Hagamos una mejor visualización de los datos de entrenamiento usando la librería knitr.
+
+```{r}
+library(knitr)
+library(kableExtra)
+
+properties_train %>%  
+  head() %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = c("striped"))
+```
+
+Veamos el tipo de cada variable usando summary.
+
+```{r}
+
+summary(properties_train)  
+
+```
+El dataset de entrenamiento tiene 8 variables. Vamos a describirlas una por una
+
+* id es una variable categórica que identifica a cada usuario, y por ende, no tiene valores repetidos. 
+
+* l3 Es una variable categórica que representa el barrio de la propiedad. A simple vista podemos deducir que posee al menos 10 valores distintos, siendo Palermo, Belgrano, Almagro, Caballito, Villa Crespo y Recoleta los más frecuentes.
+
+* rooms es una variable numérica que toma valores enteros del 1 al 8 y representa la cantidad de habitaciones de la propiedad. 
+
+* Bathrooms toma valores del 1 al 5 y representa la cantidad de baños. 
+
+* surface_total y surface_covered miden la superficie total y la superficie cubierta respectivamente, que asumimos que están medidas en metros cuadrados. Posiblemente estas variables tomen valores enteros, aunque no sería necesario que lo hagan. 
+
+* price determina el precio en dólares. 
+
+*property_type es una variable categórica que toma 3 valores distintos: Casa, PH y Departamento (el más frecuente).
+
+Para concluir el análisis de nuestros datos, veamos la correlación de las variables numéricas, para comenzar a ver relaciones que aparezcan entre las variables. Vamos a usar la correlación de Spearman dado que no removimos outliers de los datos. 
+
+```{r}
+datos_train_numericos <- properties_train %>%
+  select(rooms,bathrooms, surface_total, surface_covered, price)
+
+cor(datos_train_numericos, method = 'spearman')  
+```
+Podemos encontrar una correlación positiva entre todas las variables ya que están atadas al tamaño de la propiedad: Cuanto más grande sea una propiedad, mayor será la cantidad de habitaciones, baños, superficie y el precio de la misma. 
+Destacamos la fuerte correlación que hay entre ambas variables de superficie (0.959). Estas dos variables también presentan una correlación bastante alta con la cantidad de habitaciones (0.829 para surface_total y 0.864 para surface_covered). Las variables de superficie también se correlacionan bastante con el precio. Todo esto será tenido en cuenta más adelante a la hora de realizar los modelos lineales.
+
+# Primeros modelos de Regresión lineal múltiple
+
+Realicemos un modelo inicial usando todas las variables para predecir el precio
+
+```{r}
+library(tidymodels)
+
+modelo_total <- lm(price ~ l3 + rooms + bathrooms + surface_total + surface_covered + property_type, data = properties_train)
+tidy_total <- tidy(modelo_total, conf.int = TRUE)
+tidy_total
+```
+
+Analicemos las variables dummies. Empecemos viendo los valores que toma la variable l3
+
+```{r}
+unique(properties_train %>%
+         select(l3))
+```
+Los barrios en el modelo estarían ordenados alfabéticamente. Se puede observar que no hay una dummmy con el barrio del Abasto, que sería el primer barrio en orden alfabético. Esto quiere decir que Abasto es la *categoría basal*, en otras palabras, de valer 0 todas las variables dummies relacionadas a la localidad, estaríamos viendo el precio esperado de una propiedad del Abasto en función de los valores de las variables que no involucran a la localización. El coeficiente Beta estimado respectivo de cada propiedad nos muestra entonces la diferencia en precio promedio al comprar una propiedad en esa localidad y de comprarla en el Abasto, manteniendo todas las otras variables fijas. Así, si tuviesemos dos propiedades similares, una en agronomía, y otra en el Abasto, la pripiedad de Agronomia valdría, en promedio, 1241 dolares más que la propiedad del Abasto.
+
+Respecto a la significatividad de los coeficientes, Veamos el p-valor y los intervalos de confianza. 
+
+
+```{r}
+tidy_total %>%
+  select(term, p.value, conf.low, conf.high)
+```
+
+Se puede observar que aproximadamente la mitad de las variables dummies generadas por la variable categórica l3 no son significativas, ya que su p-valor es mayor a 0.05 y los intervalos de confianza contienen al 0. Por ejemplo, la variable l3Agronomía tiene un p-valor de 0.907 y su intervalo de confianza contiene al cero. Por ende, no tenemos evidencia estadísticamente significativa de que una propiedad de Agronomía tenga un precio esperado diferente al de una propiedad del Abasto. 
+
+Esto nos da un indicio de que posiblemente la variable categórica l3 no sea beneficiosa para el modelo, por lo que sería aconsejable quitarla o transformarla de algún modo.  Respecto a las otras variables del dataset de entrenamiento, los p-valores son extremadamente pequeños y sus intervalos de confianza están muy alejados del 0, así que nuestra conclusión es que la inclusión de esas variables sí es significativa en el modelo.
+
+La otra variable categórica, property_type, tiene 3 valores posibles: Casa, Departamento y PH. Como no hay una Dummy con Casa, entonces si las variables property_typeDepartamento y property_typePH valiesen 0, estaríamos viendo el precio promedio de una casa en función de las valores que toman las variables del modelo que no involucran a la propiedad. Los coeficientes Beta estimados de property_typeDepartamento y property_typePH muestran la diferencia esperada del precio de un departamento y de un PH respecto del precio de una casa con similares características. Así por ejemplo,  si tuviesemos un departamento y una casa ubicados en la misma localidad, con similar cantidad de habitaciones, baños, y que ocupan y cubran superficies similares, entonces el departamento valdría, en promedio, 91485 dolares más de lo que valdría la casa. 
+
+Hay que tener en cuenta que, de todos modos, los departamentos en general no son tan grandes como una casa, así que es dificil que estén en igualdad de condiciones. Además, como este modelo no presenta interacción entre variables, no podemos comparar el efecto, por ejemplo, de aumentar el número de habitaciones en el precio de un departamento y en el precio de una casa, ya que al no haber interacción, nuestro modelo interpreta que la pendiente del precio respecto de la variable rooms no depende del tipo de propiedad.
+
+Respecto a los otros coeficientes, se puede esperar que a cuanto mayor sea el número de baños, habitaciones o superficie que ocupa o que cubre la propiedad, más alto será el precio de la misma. El modelo sin embargo nos dice que el estimador de la pendiente respecto de la variable rooms es -4360. Esto significa que si dos propiedades son idénticas, salvo que una tiene una habitación más que la otra, entonces se espera que la propiedad con una habitación más cueste 4360 dólares menos. Este extraño resultado puede deberse a que la variable rooms esté muy correlacionada con las variables de superficie, lo que hace que el modelo interprete erróneamente que aumentar el número de habitaciones repercute negativamente en el precio de una propiedad. Lo que sucede en realidad es que no es realisticamente posible aumentar el número de habitaciones manteniendo las otras variables fijas, debido a la correlación positiva que hay con las otras variables del dataset, principalmente las variables de superficie.
+
+Analicemos ahora el coeficiente F, y veamos principalmente que sucede con la variable l3.
+
+```{r}
+tidy(anova(modelo_total))
+```
+
+La tabla de anova nos muestra que, según el resultado del  test F, todas las variables son estadísticamente significativas, ya que todos los p-valores dan prácticamente 0.
+
+Si bien obtuvimos que la variable l3 es estadísticamente significativa, sospechamos que esta variable puede repercutir negativamente en el modelo. Vamos a realizar otro modelo sin la variable l3 y comparemos los resultados obtenidos en ambas regresiones.
+
+```{r}
+modelo_sin_l3 <- lm(price ~  rooms + bathrooms + surface_total + surface_covered + property_type, data = properties_train)
+tidy_sin_l3 <- tidy(modelo_sin_l3, conf.int = TRUE)
+tidy_sin_l3
+```
+Todos los p-valores obtenidos dan muy por debajo de 0.05, y los intervalos de confianza están muy lejos del 0. Con esto podemos concluir que todas las variables son estadísticamente significativas. Podemos observar la tabla de Anova para confirmar esto con la variable categórica property_type.
+
+```{r}
+tidy(anova(modelo_sin_l3))
+```
+
+
+Efectivamente, el test F rechaza la hipótesis de que la pendiente del precio de una propiedad respecto de la variable property_type es igual a 0. 
+
+Respecto a los valores estimados de los parámetros Beta, nuevamente destacamos que el parámetro asociado a la variable rooms es negativo: Si tenemos dos propiedades que difieren únicamente en que una tiene una habitación más que la otra, entonces la propiedad con una habitación más esperamos que valga 13657 dólares más que lo que vale la otra habitación. Este valor da incluso mayor que el coeficiente de la variable de rooms que observamos previamente.
+
+Comparemos la efectividad de ambos modelos. Como el modelo que usa todas las variables va a ajustar mejor por tener más opciones para optimizar, utilizaremos el coeficiente de R² ajustado y no el R² común sin ajustar. De esta forma vamos a tener una forma más justa de medir que efecto tiene agregar la variable l3 en nuestro modelo. 
+
+```{r}
+library(broom)
+models <- list(modelo_total = modelo_total,modelo_sin_l3 = modelo_sin_l3)
+df_evaluacion_train = map_df(models, broom::glance, .id = "model") %>%
+  # ordenamos por R2 ajustado
+  arrange(desc(adj.r.squared))
+
+df_evaluacion_train
+
+```
+Se puede observar que los valores ajustados de R² no difieren mucho de los valores de R² sin ajustar. Como el valor ajustado de R² es mejor en el modelo total, concluimos que considerar la localidad de la propiedad tiene un efecto positivo a la hora a explicar la variabilidad del precio. En otras palabras, el modelo que considera a todas las variables explica mejor la variabilidad del precio que el modelo que no considera la variable l3.
+
+# Creación de variables
+
+Para crear un modelo superior a los modelos que vimos antes podemos crear nuevas variables. Una forma de hacerlo es extraer información de una fuente externa. Nos vamos a limitar a crear variables usando información de las variables que ya tenemos.
+
+Nos interesaría agrupar a los barrios para que sean más significativos. Vamos a agruparlos según el precio por metro cuadrado promedio. Para eso podríamos sumar todos los precios de las propiedades de cada barrio y dividirlos por el total de superficie en metros cuadrados de todas esas propiedades. Otra opción sería calcular el precio por metro cuadrado de cada propiedad y luego agrupar por localidad y promediar. Vamos a utilizar la segunda opción que a nuestro criterio calcula un promedio más honesto.
+
+```{r}
+
+properties_train <- properties_train %>%
+  mutate(precio_superficie = price/surface_total)
+
+Promedio_barrios <- unique(properties_train %>%
+  group_by(l3) %>%
+  mutate(precio_barrio = mean(precio_superficie)) %>%
+  select(l3,precio_barrio)) 
+
+Promedio_barrios  
+
+```
+Para agrupar a los barrios utilizaremos los cuartiles de precio_barrio
+```{r}
+q <- quantile(Promedio_barrios$precio_barrio)
+q
+```
+
+Añadimos precio_barrio al dataset de entrenamiento. Una vez hecho esto podemos quitar la variable precio_superficie ya que no la volveremos a utilizar.
+
+```{r}
+properties_train <-properties_train %>%
+  group_by(l3) %>%
+  mutate(precio_barrio = mean(precio_superficie)) %>%
+  select(id,l3,rooms,bathrooms,surface_total,surface_covered,price,precio_barrio,property_type)
+colnames(properties_train)
+```
+
+Los barrios cuyo precio promedio por metro cuadrado están por debajo del primer cuartil serán clasificados como barrios de precio bajo, los que se encuentren entre segundo y el tercer cuartil serán clasificados de precio medio y los restantes serán clasificados commo barrios de precio alto. De esta forma la mitad de los barrios serán considerados de precio medio.
+```{r}
+properties_train <- properties_train %>%
+  mutate(barrios = case_when(precio_barrio <= q[2] ~ 'precio_bajo',
+                             precio_barrio > q[4] ~ 'precio_alto',
+                             TRUE ~ 'precio_medio'))
+
+properties_train
+```
+Realicemos un modelo cosiderando la variable barrios en lugar de l3
+
+```{r}
+modelo_barrios <- lm(price ~  rooms + bathrooms + surface_total + surface_covered + property_type + barrios, data = properties_train)
+tidy_barrios <- tidy(modelo_barrios, conf.int = TRUE)
+tidy_barrios
+```
+Se puede observar que todos los p-valores correspondientes a  cada parámetro son muy pequeños, incluyendo las dos variables dummy agregadas: barriosprecio_bajo	 y barriosprecio_medio. Esto significa que los estimadores de cada beta son significativamente distintos de 0. Se puede observar que el estimador del Beta de la variable rooms sigue siendo negativo, por ende nuestros problemas de colinealidad siguen persistiendo.
+
+Respecto de las nuevas categorías agregadas, notamos que precio_alto es la *categoría basal* ya que no hay una dummy barriosprecio_alto. Esto quiere decir que, de valer 0 las variables barriosprecio_bajo y barriosprecio_medio, entonces la propiedad a la que queremos estimar el precio es una propiedad ubicada en un barrio con alto promedio de precio por metro cuadrado. Los estimadores de los betas correspondientes a cada tipo de barrio nos muestran cuanto varía en promedio el precio de una propiedad de ese tipo respecto del precio de una propiedad ubicada en un barrio con alto precio por metro cuadrado. Así, por ejemplo, una propiedad de Parque Chacabuco, barrio de precios bajos, costaría, en promedio, 85702 dolares menos que una propiedad de similares características pero ubicada en Palermo, barrio de precios altos.
+
+Analicemos ahora el test F de Anova.
+
+```{r}
+tidy(anova(modelo_barrios))
+
+```
+Los p-valores que arroja el test son prácticamente 0, por lo que el test F nos dice que el modelo es válido.
+
+Veamos ahora qué tan bueno es este modelo explicando la variabilidad de los datos en comparación a los dos modelos que habíamos creado previamente.
+
+```{r}
+models <- list(modelo_total = modelo_total,modelo_sin_l3 = modelo_sin_l3, modelo_barrios = modelo_barrios)
+df_evaluacion_train = map_df(models, broom::glance, .id = "model") %>%
+  # ordenamos por R2 ajustado
+  arrange(desc(adj.r.squared))
+
+df_evaluacion_train
+
+```
+* El modelo con todas las variables originales sigue explicando mejor la variabilidad de los datos de acuerdo al coeficiente de R² ajustado. Se puede observar de todos modos que la diferencia entre el R² y el R² ajustado no es muy alta debido al gran número de observaciones que tenemos disponibles, lo que hace que el efecto nocivo de agregar variables irrelevantes a los datos no se vea tan reflejado. 
+
+* El modelo nuevo presenta una mejora considerable respecto al modelo sin la variable l3. Además, a diferencia del modelo con todas las variables, la inclusión de todas las variables dummy es significativa, lo que le da al modelo cierta solidez Otra ventaja del modelo nuevo es que es mucho más sencillo que el modelo donde usabamos todas las dummies de los barrios, y por lo tanto, es más fácil de interpretar.
+
+* La única desventaja del modelo nuevo, además de su más bajo R², es que la variable categórica barrios depende del precio de las propiedades del conjunto de entrenamiento, lo que podría hacer que un barrio con no demasiadas observaciones termine en una categoría incorrecta por los datos de entrenamiento que hay disponibles. De todos modos, un barrio con pocas observaciones podría repercutir aún mucho peor en el modelo con las dummies por cada barrio, ya que el estimador para esa dummy daría muy inexacto.
+
+* La variables l3 y barrios no se podrían generalizar para barrios nuevos, pero sería más fácil arreglar este problema en la variable barrios ya que solo tendríamos que identificar si el barrio nuevo tiene precios altos, bajos o medianos mediante alguna muestra externa dada sin la necesidad de armar un modelo nuevo para ese barrio.
+
+En conclusión, considero que el modelo que utiliza la variable barrio puede ser más útil que el que considera la varialble l3 por su simpleza y mejor interpretabilidad, a pesar de que el coeficiente de R² ajustado sea menor.
+
+Para solucionar nuestros problemas de colinealidad, vamos a armar un nuevo modelo utilizando, en vez de surface_total, una variable que mida la superficie no cubierta. Esto lo hacemos porque surface_total está muy correlacionada con surface_covered
+
+```{r}
+properties_train <-
+  properties_train %>%
+  mutate(superficie_descubierta = (surface_total-surface_covered))
+
+
+```
+
+Veamos los resultados de incluir la variable superficie_descubierta al modelo en lugar de surface_total
+
+```{r}
+modelo_descubierta <- lm(price ~  rooms + bathrooms + superficie_descubierta + surface_covered + property_type + barrios, data = properties_train)
+tidy_descubierta <- tidy(modelo_descubierta, conf.int = TRUE)
+tidy_descubierta
+```
+Analizando los p-valores obtenidos, notamos que todas las variables consideradas son estadísticamente significativas. Nuevamente el estimador de la pendiente del precio en función de la variable rooms es negativo. Los estimadores de los betas de surface_covered y superficie_descubierta son 2529 y 851 respectivamente. Esto significa que, por cada metro cuadrado de superficie cubierta agregado, el precio de una propiedad aumenta, en promedio, 2529 dólares; mientras que si agregamos un metro cuadrado de superficie descubierta el precio aumenta, en promedio, 851 dólares, que es aproximadamente la tercera parte. Se puede ver, de hecho, que los estimadores dan igual en los dos modelos para todas las variables exceptuando surface_covered, y el estimador de la pendiente del precio respecto de surface_total y superficie_descubierta coinciden. Además, la diferencia entre los estimadores del beta de surface_covered en ambos modelos es el estimador del beta de superficie_descubierta. Dicha diferencia se debe a que en el modelo donde consideramos surface_total estamos contando la superficie descubierta 2 veces al considerar tanto surface_covered como surface_total. Así que escencialmente ambos modelos son iguales. 
+
+Veamos rápidamente el test F para comprobar la validez del modelo.
+
+```{r}
+tidy(anova(modelo_descubierta))
+
+```
+Los p-valores son todos prácticamente 0. El modelo según el test F es válido.
+
+Ahora comparemos los coeficientes de R² ajustado de cada modelo 
+
+
+```{r}
+models <- list(modelo_total = modelo_total,modelo_sin_l3 = modelo_sin_l3, modelo_barrios = modelo_barrios, modelo_descubierta = modelo_descubierta)
+df_evaluacion_train = map_df(models, broom::glance, .id = "model") %>%
+  # ordenamos por R2 ajustado
+  arrange(desc(adj.r.squared))
+
+df_evaluacion_train
+
+```
+
+Los coeficientes de R² ajustado de ambos modelos coinciden. Esto se debe a que ambos modelos escencialmente son lo mismo. De todos modos, el modelo con superficie descubierta es más fácil de interpretar ya que no presenta solapamientos entre las variables de superficie.
+
+# Diagnóstico del modelo de superficie descubierta
+
+En esta sección observaremos los residuos del modelo para corroborar que se verifican los supuestos del mismo. Observemos el diagnóstico del modelo donde consideramos la variable barrios en lugar de l3 y la variable superficie_descubierta en lugar de surface_total.
+
+```{r}
+plot(modelo_descubierta)
+```
+
+* Residous vs valores predichos: Para que los supuestos se cumplan, los residuos no deberían tener estructura. El gráfico de residuos vs valores predichos debería formar una nube uniforme de puntos. Se puede ver, sin embargo, que los residuos varían más para valores predichos medianamente grandes (al rededor de 400000).
+
+* QQ plot: Los extremos inferior izquierdo y superior derecho no se ajustan a la distribución teórica. 
+
+* Residuos estandarizados vs valores predichos: La pendiente del gráfico es positiva, lo que muestra que los residuos estandarizados tienen una tendencia a aumentar a medida que aumenta el valor predicho.
+
+* Residuos vs Leverage: Hay una observación que tiene un leverage muy alto. El residuo asociado a ese valor es bastante alto también, lo que indica que ese valor podría repercutir mucho en la calidad del modelo.
+
+Busquemos la observación con alto leverage
+
+```{r}
+au_modelos = purrr::map_df(models, broom::augment, .id = "model")
+
+au_modelos %>% filter(model == "modelo_descubierta") %>%
+  filter(.hat == max(.hat))
+```
+Pareciera ser una observación con valores faltantes en l3 y en surface_total (y por ende, en superficie_descubierta).
+
+
+Debido a la presencia de observaciones con alto leverage, la falta de normalidad y  la falta de homocedasticidad detectada, concluimos como diagnóstico que el modelo de superficie descubierta no satisface los supuestos del modelo lineal.
+
+# Modelo con Logaritmo
+
+En esta sección vamos a crear un modelo lineal usando variables escaladas logarítmicamente. El objetivo de este análisis es remover las limitaciones del modelo lineal para explicar la variación del precio cuando dichas variaciones, en función de las variables que tenemos a nuestra disposición, son exponenciales. Las variables que vamos a componer con logaritmo son price, rooms, bathrooms y surface_covered. También usaremos las variables categóricas property_type y barrios y la variable numérica superficie_descubierta, la cual no le tomamos logaritmo porque podrían haber problemas de dominio si esta toma el valor 0.
+
+Comencemos creando las variables logartimo.
+
+```{r}
+properties_train <- properties_train %>%
+  mutate(log_price = log(price), log_rooms = log(rooms), log_bathrooms = log(bathrooms), log_surface_covered = log(surface_covered))
+
+head(properties_train)
+```
+
+Procedamos entonces a generar el modelo y estudiar los resultados del mismo
+
+```{r}
+modelo_log<- lm(log_price ~  log_rooms + log_bathrooms + superficie_descubierta + log_surface_covered + property_type + barrios, data = properties_train)
+tidy_log <- tidy(modelo_log, conf.int = TRUE)
+tidy_log
+```
+
+Se puede observar que los p-valores de cada término son muy pequeños y los intervalos de confianza están muy alejados del 0. Observemos también el test F para asegurarnos que el modelo con logaritmo tiene validez.
+
+´
+```{r}
+tidy(anova(modelo_log))
+
+```
+
+La tabla de anova muestra que los p-valores son prácticamente todos 0, lo que valida los resultados que podemos interpretar del modelo. 
+
+Como estamos tomando logaritmo sobre el precio, es de esperar que las estimaciones de la pendiente del logaritmo del precio respecto de cada variable del modelo disminuyan considerablemente. Así, por ejemplo, el estimador del beta de log_rooms sigue siendo negativo pero esta vez es de tan solo -0.05. Para que el logaritmo de rooms suba 1 necesitaríamos que el número de habitaciones sea multiplicado por el número e (es decir, aproximadamente por 2.718). Dado que la cantidad de habitaciones es un número entero, es raro que esto suceda, pero podemos dar un ejemplo aproximado. 
+
+Supongamos que tenemos una propiedad con 4 habitaciones, y otra con 11 habitaciones. 11 es 4 * 2.75, es decir, 4*e es aproximadamente 11. De tener ambas propiedades similares valores en el resto de las variables, tendríamos, a efectos del modelo, 2 observaciones similares excepto que en log_rooms una vale log(4) = 1.38, y la otra vale log(11) = 2.39. 
+
+Como el valor de log_rooms aumenta (aproximadamente) en 1, entonces la estimación del logaritmo del precio en la pripiedad con 11 habitaciones disminuiría respecto de la de 4 habitaciones en 0.048. Si llamamos A a la estimación del precio de la propiedad con 4 habitaciones y B a la estimación del precio de la propiedad con 11 habitaciones (con estimación del precio nos referimos a la exponencial de la estimación del logaritmo del precio), entonces tenemos que
+
+$ Log(A) - Log(B) = 0.048$ 
+$Log(A/B) = 0.048$
+
+Luego $A/B = e^{0.048} => B = A * e^{-0.048}$, que es aproximadamente $A * 0.95$ .
+
+De esto finalmente podemos concluir que si multiplicamos por e el número de habitaciones preservando el valor del resto de las variables, se espera entonces que el valor de la propiedad disminuya un 5%. Como ya comentamos anteriormente, este análisis es poco útil en la práctica ya que es poco realista que podamos aumentar tanto el número de las habitaciones preservando el resto de las variables fijas. Un análisis similar podemos hacer con el resto de las variables numéricas a las que les aplicamos logaritmo, aunque en esos casos, multiplicar el valor de cada variable por e tendrá un efecto multiplicativo positivo sobre el precio.
+
+Respecto de la variable superficie_descubierta, el intercept de 0.0038 nos dice que, de 'agregar' un metro cuadrado de superficie sin cubrir, el logaritmo del precio aumentará, en promedio, 0.0038. Esto se traduce a que el precio se espera que se multiplique por $e^{0.0038} = 1.003$.
+
+Respecto a las variables categóricas, tomemos por ejemplo barrios. La categoría basal en ese caso es precio_alto. El estimador del beta de la variable dummy de precio_bajo es -0.437587863. Esto significa que, de tener dos propiedades con similares características, solo que una es de un barrio de precios altos y la otra es de un barrio de precios bajos, entonces la diferencia en términos del logaritmo del precio de las dos propiedades será, en promedio, 0.4376, siendo la propiedad del barrio más caro la que tiene el precio más elevado. De esto conluímos la proporción del precio de una propiedad de un barrio humilde respecto del precio de una propiedad con similares características proveniente de un barrio lujoso es, en promedio, $e^{-0.4376} = 0.6455$. En otras palabras, una propiedad de un barrio humilde cuesta un 35% menos, en promedio, que una propiedad proveniente de un barrio más rico.
+
+Analicemos ahora el coeficiente de R² ajustado de este modelo y comparemos con los modelos anteriores.
+
+```{r}
+models <- list(modelo_total = modelo_total,modelo_sin_l3 = modelo_sin_l3, modelo_barrios = modelo_barrios, modelo_descubierta = modelo_descubierta, modelo_log = modelo_log)
+df_evaluacion_train = map_df(models, broom::glance, .id = "model") %>%
+  # ordenamos por R2 ajustado
+  arrange(desc(adj.r.squared))
+
+df_evaluacion_train
+
+```
+
+El R² ajustado del modelo con logaritmo es más alto incluso que el R² ajustado del modelo original donde usamos todas las variables y del modelo usando la superficie descubierta. De esto concluimos que este modelo explica mejor la variabilidad del precio que los modelos que construímos previamente. Cabe recordar, de todas formas, que este modelo en realidad explica la variación del logaritmo del precio, por ende, más que la variación del precio estaría explicando la variación proporcional del precio.
+
+Analicemos ahora la validez de los supuestos del modelo analizando los residuos del mismo.
+
+```{r}
+plot(modelo_log)
+
+```
+
+* Residuos vs valores predichos: Podemos encontrar poca estructura en los residuos. Se puede detectar que la variación de los residuos para valores predichos bajos (menores a 12) es más baja que para valores predichos ubicados en el intervalo [12,13]. En comparación al modelo de superficie descubierta, en este modelo estaría mucho más cerca de cumplirse el supuesto de homocedasticidad, pero a nuestro criterio, lo que observamos no es suficiente para decir que el supuesto se cumpla.
+
+* QQ plot: Los extramos inferior izquierdo y superior derecho no se ajustan a la distribución teórica. La normalidad tampoco se cumpliría por lo tanto. A comparación del modelo de superficie descubierta, la distribución está mucho más cerca de la distribución teórica.
+
+* Residuos estandarizados vs valores predichos: No se observa estructura en los datos. 
+
+* Residuos vs Leverage: Hay 3 observaciones con un Leverage alto, aunque no están demasiado lejos del leverage de otras observaciones, así que podríamos desestimarlas.
+
+* Diagnóstico: El modelo de logaritmo presenta un poco de heterocedasticidad y tampoco satisface el supuesto de normalidad. Este modelo por lo tanto no satisface los supuestos del modelo lineal.  
+
+# Modelos finales
+
+Creemos 2 modelos nuevos para hacer regresión lineal múltiple. Describamos nuestro primer modelo rápidamente
+
+Modelo proportion: En este modelo en lugar de considerar superficie_descubierta o surface_covered tomaremos el porcentaje de superficie cubierta: 100 * Surface_covered/surface_total y surface_total para armar un modelo. Esto lo usamos debido a que a nuestro entender, cuanta mayor es la superficie de un terreno, máyor es la superficie descubierta. Corroboremos esa hipótesis mirando la correlación de spearman
+
+```{r}
+cor(x = properties_train$surface_total,properties_train$superficie_descubierta, method = 'spearman')
+```
+
+La correlación de spearman es bastante mayor a 0. Si tomamos la proporción tenemos, sin embargo
+
+```{r}
+cor(x = properties_train$surface_total, y = 100* properties_train$surface_covered/properties_train$surface_total, method = 'spearman')
+
+```
+La correlación es negativa y está más cerca del 0, por lo que es una correlación más débil.
+
+Creemos entonces la variable que necesitamos para este modelo.
+
+```{r}
+properties_train <- properties_train %>%
+  mutate(proportion_covered = 100*surface_covered/surface_total )
+```
+
+Procedamos así a realizar el modelo. Usaremos las mismas variables que el modelo de superficie descubierta solo que en vez de surface_covered y surperficie_descubierta usaremos surface_total y proportion_covered. 
+
+```{r}
+modelo_proportion<- lm(price ~  rooms + bathrooms + surface_total + proportion_covered + property_type + barrios, data = properties_train)
+tidy_proportion <- tidy(modelo_proportion, conf.int = TRUE)
+tidy_proportion
+tidy(anova(modelo_proportion))
+```
+
+
+Los p-valores respectivos de cada estimador son todos muy pequeños y los intervalos de confianza están muy lejanos del 0. Los p-valores de la tabla de anova dan prácticamente 0, dándole todo esto validez a nuestro modelo. 
+
+Respecto a los estimadores de cada variable, destacamos que el estimador del beta de rooms da nuevamente negativo. Esto, nuevamente, se debe a que, por la colinealidad de las variables, al aumentar el número de habitaciones debería aumentar la superficie cubierta, y por ende, la proporción de superficie cubierta del tereno.  
+
+El estimador asociado a la variable proportion_covered es 1335. Esto significa que, de aumentar la proporción de superficie cubierta en un 1% del total de la superficie, el precio de una propierdad aumentará, en promedio, 1335 dolares.
+
+Veamos rápidamente ahora si se cumplen los supuestos del modelo.
+
+```{r}
+plot(modelo_proportion)
+
+```
+
+* Residuos vs valores predichos: Se puede ver una estructura en los residuos. La varianza de los mismos aumenta cuanto mayores son los valores predichos.
+
+* QQ plot: Los extremos no coinciden con la distribución teórica
+
+* Residuos vs Leverage: Hay una observación con un Leverage muy alto (mayor a 0.0030). Hay otra observación con un Leverage bastante alto.
+
+* Diagnóstico: No se satisfacen los supuestos de homocedasticidad ni el de normalidad, y hay una observación con un leverage muy superior al resto. Por lo que concluimos que no se satisfacen los supuestos del modelo lineal.
+
+Antes de medir el R² ajustado, creemos nuestro último modelo. Este modelo usará otra vez el logaritmo natural, pero le sumará 1 a las variables para así poder aplicar el logaritmo incluso cuando las variables alcancen el valor 0. Definamos el logaritmo corrido que usaremos para tranformar las variables numéricas.
+
+
+
+```{r}
+logc <- function(x){return (log(x+1))}
+```
+Las variables que vamos a transformar son price, rooms, bathrooms y surface_total. Las variables categóricas barrios y property_type y la variable proportion_covered serán utilizadas con sus valores originales.
+
+```{r}
+properties_train <- properties_train %>%
+  mutate(logc_price = logc(price), logc_rooms = logc(rooms), logc_bathrooms = logc(bathrooms),  logc_surface_total
+         =logc(surface_total))
+```
+
+Procedamos entonces a entrenar el modelo y observemos los resultados obtenidos.
+
+
+```{r}
+modelo_logc<- lm(logc_price ~  logc_rooms + logc_bathrooms + logc_surface_total + proportion_covered + property_type + barrios, data = properties_train)
+tidy_logc <- tidy(modelo_logc, conf.int = TRUE)
+tidy_logc
+tidy(anova(modelo_logc))
+```
+Los p-valores respectivos a cada variable del modelo son significativamente pequeños y los intervalos de confianza no contienen al 0. Los p-valores de la tabla de anova dan prácticamente 0, por lo que todas las variables son significativas para el modelo.
+
+Respecto a los estimadores, la única variable numérica que dio negativo el estimador es, nuevamente, la variable relacionada con rooms, en este caso logc_rooms. 
+
+Veamos ahora si se satisfacen los supuestos del modelo
+
+```{r}
+plot(modelo_logc)
+```
+
+Diagnóstico: Para ahorrar explicación, los gráficos mostrados son muy similares a los gráficos del otro modelo del logaritmo que armamos. Por ende, los residuos presentan una ligera heterocedasticidad y no cumplen el supuesto de normalidad. Hay algunas observaciones con bastante Leverage pero el valor de los Leverages no es demasiado elevado de todos modos. Por lo tanto, el modelo con el logaritmo corrido no cumple los supuestos del modelo lineal.
+
+Otro problema de este modelo es la interpretabilidad de sus resultados. Con el logaritmo ya de por sí no es fácil hacer una interpretación sencilla, pero al correr el logaritmo hay que tener en cuenta el corrimiento a la hora de interpretar. 
+
+Por ejemplo, en logc_bathrooms el estimador de la pendiente del logaritmo corrido del precio es	0.291321576 Esto significa que, de aumentar en 1 en valor del logaritmo corrido de bathrooms, entonces el logaritmo del precio aumentará, en promedio, 0.291. Para que aumente en 1 el logaritmo corrido, necesitamos que el valor de la variable corrida se multiplique por e. Recordemos que 11 era aproximadamente 4 * e. Luego, si tenemos una propiedad con 3 baños y otra con 10, tenemos que (3+1) * e es aproximadamente 10+1. Por lo tanto, log ( 10 + 1) es aproximadamente log(3 + 1) + 1. Esto nos dice que, si tenemos dos propiedades similares, solo que una tiene 10 baños y la otra con 3, entonces el logaritmo corrido del precio de la propiedad con 10 baños aumentará, respecto del logaritmo corrido del precio de la propiedad con 3 baños, en promedio, en 0.291. 
+
+Llamemos A al precio estimado de la propiedad de 10 baños y B al precio estimado de la propiedad con 3 baños, tenemos entonces que $log(A+1) = log(B+1) + 0.291$
+Luego $(A+1)/(B+1) = e^{0.291} = 1.33$
+
+Despejando, $A = 1.33 * B + 0.33$
+
+Es decir, esperamos que el precio de la propiedad con 10 habitaciones sea el precio de la propiedad con 3 habitaciones multiplicado por 1.33 más 0.33 (que es despreciable).
+
+El proceso para llegar a esta conclusión fue una cuenta muy tediosa y tuvimos que fijar un ejemplo particular para hacer todo más comprensible, por lo que la interpretación de este modelo es más complicada incluso que la interpretación del primer modelo logarítmico.
+
+Vamos a buscar el mejor modelo. Para eso primero seleccionaremos 4 modelos: los dos modelos que recién creamos, y dos modelos de los que teníamos previamente. Uno de esos modelos será el modelo original de logaritmo, que nos  había dado el R² ajustado más grande, y por ende, es el modelo que mejor exlpica la variabilidad entre los modelos originales (aunque recordemos que ese R² no se corresponde específicamente a la variabilidad del precio sino una variación proporcional). El otro modelo será el modelo de superficie descubierta, que, si bien posee un coeficiente de R² ajustado más chico que el del logaritmo y que el modelo donde consideramos todas las variables, es un modelo mucho más simple y fácil de interpretar que estos 2 últimos.
+
+
+
+Comparemos la performance de cada uno de los 4 modelos seleccionados en términos de la proporción de variabilidad explicada. Para eso, comparamos los coeficientes de R² ajustado.
+
+```{r}
+models <- list(modelo_descubierta = modelo_descubierta, modelo_log = modelo_log, modelo_proportion = modelo_proportion, modelo_logc = modelo_logc)
+df_evaluacion_train = map_df(models, broom::glance, .id = "model") %>%
+  # ordenamos por R2 ajustado
+  arrange(desc(adj.r.squared))
+
+df_evaluacion_train
+
+```
+
+
+El modelo_logc tiene un coeficiente de R² ajustado un poco mayor que el modelo_log
+
+# Evaluación de los modelos en el dataset de training
+
+Vamos ahora a proceder a evaluar los 4 modelos que seleccionamos para ver cual es el mejor. Para hacer la evaluación vamos a utilizar el error cuadrático medio, el *RMSE*. El modelo lineal busca estimar los coeficientes para minimizar el error cuadrático medio, por ende tendría sentido utilizar esta métrica para evaluar la performance de los modelos, ya que estaríamos siendo consistentes con el criterio del modelo lineal para ver entre dos modelos lineales cuál es el mejor. De todos modos, esta métrica tendría más sentido en el conjunto de testing, ya que podemos minimizar el valor de esta métrica simplemente haciendo más complejo al modelo y agregando la mayor cantidad de variables posibles al mismo.
+
+Un inconveniente de esta métrica es que no es muy robusta ante la presencia de outliers. De tener un dataset con un gran número de outliers deberíamos haber hecho un preprocesamiento para limpiar los datos y así poder realizar modelos lineales que no se vean muy afectados por las observaciones con alto leverage que resultan outliers.
+
+Otro inconveniente que tenemos es que para hacer la validación todos los modelos lineales deberían predecir el precio. Sin embargo los modelos con logaritmo predicen una composición del precio con una función logaritmica. La función augment nos da los valores predichos y los residuos. Para comparar la performace de los modelos convendría, en los modelos logaritmicos, transformar los valores predichos para que predigan el precio, y actualizar los residuos con esa información.
+
+Comencemos con el primer modelo logarítmico que armamos. En ese modelo explicamos la variación de log(price) respecto a las otras variables. Para obtener una predicción del precio podemos componer con la función inversa del logaritmo: la función exponencial. Una vez hecha esa conversión, tenemos también que actualizar el residuo, que resulta ser la diferencia entre el valor real, el precio, y el nuevo valor ajustado.
+
+
+```{r}
+pred_log <- augment(modelo_log, newdata=properties_train) %>%
+  mutate(.fitted = exp(.fitted), .resid = price-.fitted) %>%
+  select(id, price, .fitted, .resid)
+pred_log
+```
+Veamos el error cuadrático medio del modelo
+```{r}
+rmse(data = pred_log, truth = price, estimate = .fitted)
+
+```
+
+Hagamos lo mismo con el modelo de superficie descubierta. En este caso no necesitamos transformar variables.
+
+```{r}
+pred_descubierta <- augment(modelo_descubierta, newdata=properties_train) %>%
+  select(id, price, .fitted, .resid)
+pred_descubierta
+```
+Calculemos su RMSE.
+
+```{r}
+rmse(data = pred_descubierta, truth = price, estimate = .fitted)
+
+```
+
+El RMSE dio más alto, veamos con el modelo donde incluímos el porcentaje de superficie cubierta.
+
+```{r}
+pred_proportion <- augment(modelo_proportion, newdata=properties_train) %>%
+  select(id, price, .fitted, .resid)
+pred_proportion
+```
+Analicemos el RMSE.
+
+```{r}
+rmse(data = pred_proportion, truth = price, estimate = .fitted)
+```
+
+Por último probemos con el último modelo logarítmico que creamos. En este caso compusimos price con la función $f(x) = ln(x+1)$. La inversa de esa función es $f^{-1}(x) = exp(x)-1$. Basándonos en eso actualizamos los valores predichos y los residuos.
+
+```{r}
+pred_logc <- augment(modelo_logc, newdata=properties_train) %>%
+  mutate(.fitted = exp(.fitted) - 1, .resid = price-.fitted) %>%
+  select(id, price, .fitted, .resid)
+pred_logc
+```
+Veamos el RMSE de este modelo logarítmico.
+
+```{r}
+rmse(data = pred_logc, truth = price, estimate = .fitted)
+```
+El RMSE del modelo logarítmico corrido dio más bajo que en los otros modelos, con un error cuadrático medio de 68384.41. Recordemos que este modelo es más dificil de interpretar que los modelos que no involucran logaritmo. Sin embargo, el único modelo con un error cuadrático medio cercano también es un modelo logarítmico, así que consideramos, en términos del dataset de entrenamiento, que el modelo de logaritmo corrido es el mejor modelo de los 4 que seleccionamos. Ahora analicemos como dan las métricas en el dataset de testing.
+
+
+# Evaluación de los modelos en el dataset de testing
+
+Para poder validar en testing deberíamos redefinir todas las variables que usamos en los modelos que armamos en ese dataset.
+
+Para traer de nuevo la variable 'barrios', vamos a extraer la información del dataset de entrenamiento el lugar de repetir el procedimiento en el dataset de testing, de esa forma evitamos usar el precio de las propiedades de testing para definir la variable barrios y además somos consistentes a la elección que hicimos antes.
+
+```{r}
+barrio_seleccion <- unique(properties_train %>%
+                             select(l3, barrios))
+                             
+barrio_seleccion
+```
+Hacemos un left join para anexar la variable barrios al dataset de testing.
+
+```{r}
+properties_test <-properties_test %>%
+  left_join(., barrio_seleccion, by = "l3")
+head(properties_test)
+```
+Generemos las variables restantes.
+
+```{r}
+properties_test <-properties_test %>%
+  mutate(superficie_descubierta = surface_total-surface_covered, proportion_covered = 100*surface_covered/surface_total, log_price = log(price), log_rooms = log(rooms), log_bathrooms = log(bathrooms), log_surface_covered = log(surface_covered), logc_price = logc(price), logc_rooms = logc(rooms), logc_bathrooms = logc(bathrooms), logc_surface_total = logc(surface_total))
+```
+
+Evaluemos ahora sí cada modelo, y encontremos el RMSE de cada uno
+
+Primer modelo logarítmico
+
+```{r}
+pred_log_test <- augment(modelo_log, newdata=properties_test) %>%
+  mutate(.fitted = exp(.fitted), .resid = price-.fitted)
+
+rmse(pred_log_test, truth = price, estimate = .fitted)
+
+```
+Modelo de superficie descubierta
+
+```{r}
+pred_descubierta_test <- augment(modelo_descubierta, newdata=properties_test)
+
+rmse(pred_descubierta_test, truth = price, estimate = .fitted)
+
+```
+Modelo de con porcentaje de superficie cubierta
+
+```{r}
+pred_proportion_test <- augment(modelo_proportion, newdata=properties_test)
+
+rmse(pred_proportion_test, truth = price, estimate = .fitted)
+
+```
+
+
+Modelo logarítmico con corrimiento
+
+```{r}
+pred_logc_test <- augment(modelo_logc, newdata=properties_test) %>%
+  mutate(.fitted = exp(.fitted)-1, .resid = price-.fitted)
+
+rmse(pred_logc_test, truth = price, estimate = .fitted)
+
+```
+
+Nuevamente, el modelo con error cuadrático medio más chico es el modelo con logaritmo corrido, seguido por el primer modelo logarítmico. 
+
+Dado que este modelo es el mejor tanto en el conjunto de entrenamiento como en el de testing, y, además, el único modelo medianamente cercano en este sentido es el otro modelo modelo dificil de interpretar, concluimos que el modelo con logaritmo corrido es el mejor modelo con mejor performance de los que seleccionamos.
+
+# Comentarios
+
+Este trabajo fue realizado utilizando las clases prácticas y las notebooks de esas clases. Discutí cosas del trabajo con las siguientes personas, con las cuales comparto grupo en otra materia:
+
+* Lucila Diacono
+* Gabriel Figueiro
+* Victoria Colombo
